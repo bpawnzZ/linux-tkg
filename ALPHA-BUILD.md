@@ -47,7 +47,9 @@ the config profile and fails the run if any symbol silently dropped.
 
 ```bash
 cd ~/kernel-out
-KREL=6.12.112-tkg-eevdf
+# NB: the kernel release embeds the pkgrel -> 6.12.112-273-tkg-eevdf.
+# Confirm the exact string with `uname -r` / `ls /usr/lib/modules/`.
+KREL=6.12.112-273-tkg-eevdf
 
 # 1. headers first, then prove EVERY DKMS module builds against them
 sudo pacman -U linux612-tkg-eevdf-headers-*.pkg.tar.zst

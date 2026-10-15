@@ -140,8 +140,12 @@ jobs:
 
           # `yes ''` auto-answers any prompt with its default, so prove the pin
           # held rather than that the build merely exited 0.
+          # NB: find must be pinned to the TOP-LEVEL Makefile -- a bare
+          # `-name Makefile` also matches ipc/Makefile, which carries no
+          # VERSION line and yields a bogus "" value.
           echo "--- the pinned series, not whatever upstream calls latest ---"
-          mk=$(find /tmp -maxdepth 5 -name Makefile -path '*linux-src-git*' -print -quit)
+          mk=/tmp/linux-tkg/linux-src-git/Makefile
+          [ -f "$mk" ] || mk=$(find /tmp -maxdepth 4 -path '*/linux-src-git/Makefile' -print -quit)
           rel=$(awk '/^VERSION =/{v=$3} /^PATCHLEVEL =/{p=$3} /^SUBLEVEL =/{s=$3} END{print v"."p"."s}' "$mk")
           case "$rel" in
             6.12.*) echo "OK: building $rel" ;;
@@ -187,9 +191,14 @@ jobs:
       - name: rename kernel config
         run: mv kernelconfig.new kernelconfig.arch.${{ env._cpusched }}.txt || true
 
+      # Runs even if the assert above trips: two hours of compile must never be
+      # thrown away by a bad assertion -- with the artifact in hand the real
+      # config can be inspected instead of guessed at.
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: arch-kernel-packages-${{ env._cpusched }}
+          if-no-files-found: warn
           path: |
             ${{ env.PKGDEST }}/linux*.pkg.tar.zst
             kernelconfig*

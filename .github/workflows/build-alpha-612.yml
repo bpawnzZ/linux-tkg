@@ -1,0 +1,26 @@
+name: Build Alpha 6.12 LTS kernel
+
+# ALPHA fork entry point. Upstream's arch-builder.yml is workflow_call-only,
+# so this file is the button. Every build knob lives in the callee's env block
+# (.github/workflows/arch-builder.yml) -- edit there, not here.
+#
+# Push to a branch, then:  gh workflow run build-alpha-612.yml --ref <branch>
+
+on:
+  workflow_dispatch:
+    inputs:
+      _cpusched:
+        description: "CPU scheduler (eevdf = stock/safe, recommended)"
+        required: true
+        default: "eevdf"
+        type: choice
+        options:
+          - eevdf
+          - bore
+          - bmq
+
+jobs:
+  build:
+    uses: ./.github/workflows/arch-builder.yml
+    with:
+      _cpusched: ${{ inputs._cpusched }}

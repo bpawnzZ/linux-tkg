@@ -7,21 +7,83 @@ on:
         type: string
 
 
+# ---------------------------------------------------------------------------
+# ALPHA build knobs  (fork bpawnzZ/linux-tkg, branch alpha/6.12-lts-eevdf)
+# Target: LUCABRASI -- ASUS ROG G752VS / i7-6820HK (Skylake-H) / GTX 1070 Mobile
+#         ZFS root + ZFSBootMenu, DKMS: nvidia 570.153.02, zfs 2.4.1, r8168,
+#         vboxhost, i2c-ch341.
+#
+# Precedence (linux-tkg-config/prepare:612):
+#     env vars > external cfg > customization.cfg
+# but ONLY for names that exist as keys in customization.cfg. A name that is
+# not a key there is filtered out silently -- e.g. upstream CI's `_nofallback`
+# is inert. Do not add knobs without checking `grep '^_knob=' customization.cfg`.
+# ---------------------------------------------------------------------------
 env:
-  _processor_opt: "x86-64"
+  # --- version pin --------------------------------------------------------
+  # 6.12 = newest MAINTAINED series nvidia 570.153.02 still builds against.
+  #   6.16 is EOL (absent from kernel.org longterm; in tkg _eol_kernels)
+  #   6.17+ fails DKMS: nv-dmabuf.c: implicit declaration of function
+  #         'dma_buf_attachment_is_dynamic'
+  #   6.12 LTS projected EOL Dec 2028.
+  _version: "6.12-latest"
+  _cpusched: "eevdf"
+  _distro: "Arch"
+
+  # --- base config: the host's own proven one ------------------------------
+  # Arch 6.12.61 LTS exactly as it boots today; olddefconfig brings it to
+  # 6.12.112. Inherits ZFS hooks, nvidia fbdev, iwlwifi, docker/overlayfs,
+  # PSI, BTF, CET/IBT and sched_ext as the machine already proves them.
+  _configfile: "config-alpha-6.12.txt"
+
+  # --- ISA: -march=skylake -mtune=skylake (AVX2/BMI2/FMA/MOVBE) ------------
+  # NEVER "native"    -> tunes for the CI runner's CPU, not Skylake.
+  # NEVER "x86-64-v4" -> needs AVX-512; this mobile Skylake does not have it.
+  _processor_opt: "skylake"
+  _compiler: "gcc"
+  _lto_mode: "no"
+
+  # --- latency profile: match what the machine runs today ------------------
+  # (the previous build's deviation was HZ=1000 + full PREEMPT)
+  _timer_freq: "300"
+  _NR_CPUS_value: "8"
+  _default_cpu_gov: ""
+  _ftracedisable: "false"
+
+  # --- no module dieting, no debug stripping ------------------------------
+  # These two were what silently removed BTF, IBT, sched_ext and the lockup
+  # detectors from the previous build.
+  _kernel_on_diet: "false"
+  _modprobeddb: "false"
+  _debugdisable: "false"
+
+  # --- TKG patchset: desktop/IO latency (zenify needs glitched_base) -------
+  _glitched_base: "true"
+  _zenify: "true"
+  _clear_patches: "true"
+  _misc_adds: "true"
+  _zfsfix: "true"
+  _mglru: "true"
+
+  # --- no baked-in cmdline ------------------------------------------------
+  # TKG would emit CONFIG_CMDLINE_BOOL=y + CONFIG_CMDLINE="<value>", appended
+  # to the bootloader's. The ZFS root arrives from zbm-kcl; keep it that way.
+  _custom_commandline: ""
+
+  # --- unattended: never block on an interactive prompt --------------------
+  _menunconfig: "0"
+  _diffconfig: "false"
+  _config_fragments: "false"
+  _user_patches_no_confirm: "true"
+
+  # --- build plumbing -----------------------------------------------------
   _git_mirror: "gregkh"
   PKGDEST: "/tmp/linux-tkg"
-  _debugdisable: "true"
   _noccache: "true"
   _STRIP: "true"
-  _compiler: "llvm"
-  _lto_mode: "full"
-  _kernel_on_diet: "true"
+  _force_all_threads: "true"
   _kernel_work_folder: "/tmp"
   _kernel_source_folder: "/tmp"
-  # _modprobeddb: "true"
-  _modprobeddb_db_path: ${{ github.workspace }}/modprobed.db
-  _nofallback: "true"
 
 
 
@@ -50,9 +112,11 @@ jobs:
       # 2. create a user "user" and give it passwordless sudo
       #    and necessary permissions
       #    because makepkg absolutely refuses to run as root
+      # NOTE: `dwarves` provides pahole. Without it CONFIG_DEBUG_INFO_BTF
+      # silently drops out of the config even with _debugdisable=false.
       - name: Prepare for makepkg
         run: |
-          pacman -Syu --noconfirm base-devel sudo
+          pacman -Syu --noconfirm base-devel sudo dwarves
           useradd user -G wheel && echo "user ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
           chown user -R ..
           chown user -R /tmp
@@ -64,16 +128,56 @@ jobs:
 
       - name: Compile Kernel
         run: su --preserve-environment user -c "yes '' | makepkg --noconfirm -s"
-        # run: |
-        #   mkdir -p "$PKGDEST"
-        #   echo "test" > "$PKGDEST"/linux-$_cpusched.pkg.tar.zst
+
+      # The whole point of this fork is a build whose config is known, not
+      # assumed. A drop-in symbol vanishes without failing the build, so assert
+      # the profile explicitly instead of trusting the job to have gone green.
+      - name: Assert the built kernel matches intent
+        run: |
+          set -euo pipefail
+          [ -f kernelconfig.new ] || { echo "FAIL: kernelconfig.new not produced"; exit 1; }
+          echo "--- config invariants ---"
+          for want in \
+            'CONFIG_HZ=300' \
+            'CONFIG_PREEMPT_VOLUNTARY=y' \
+            'CONFIG_PREEMPT_DYNAMIC=y' \
+            'CONFIG_DEBUG_INFO_BTF=y' \
+            'CONFIG_X86_KERNEL_IBT=y' \
+            'CONFIG_SCHED_CLASS_EXT=y' \
+            'CONFIG_LOCKUP_DETECTOR=y' \
+            'CONFIG_SOFTLOCKUP_DETECTOR=y' \
+            'CONFIG_NR_CPUS=8' \
+            'CONFIG_GENERIC_CPU=y' \
+            'CONFIG_LOCALVERSION=""' \
+            'CONFIG_DEBUG_INFO_BTF_MODULES=y' ; do
+            grep -qxF "$want" kernelconfig.new \
+              || { echo "FAIL: '$want' missing from the built config"; exit 1; }
+          done
+
+          echo "--- no baked-in cmdline (would append to the zbm-kcl one) ---"
+          grep -qxF '# CONFIG_CMDLINE_BOOL is not set' kernelconfig.new \
+            || { echo "FAIL: a built-in kernel cmdline was generated"; exit 1; }
+
+          echo "--- rust must stay off: no rust toolchain is installed ---"
+          if grep -qE '^CONFIG_RUST=y' kernelconfig.new; then
+            echo "FAIL: Rust enabled but no rustc in the build container"; exit 1
+          fi
+
+          echo "--- BTF must survive module stripping ---"
+          ko=$(find /tmp -name '*.ko' -print -quit)
+          echo "probing ${ko:-<none found>}"
+          [ -n "$ko" ] && objdump -h "$ko" | grep -q '\.BTF' \
+            || { echo "FAIL: .BTF section not present in built modules"; exit 1; }
+
+          echo "--- packages ---"
+          ls -lh "$PKGDEST"
 
       - name: rename kernel config
-        run: mv kernelconfig.new kernelconfig.arch.${{ env._cpusched }}.txt
+        run: mv kernelconfig.new kernelconfig.arch.${{ env._cpusched }}.txt || true
 
       - uses: actions/upload-artifact@v4
         with:
           name: arch-kernel-packages-${{ env._cpusched }}
           path: |
             ${{ env.PKGDEST }}/linux*.pkg.tar.zst
-            kernelconfig*.txt
+            kernelconfig*

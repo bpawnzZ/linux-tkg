@@ -112,11 +112,12 @@ jobs:
       # 2. create a user "user" and give it passwordless sudo
       #    and necessary permissions
       #    because makepkg absolutely refuses to run as root
-      # NOTE: `dwarves` provides pahole. Without it CONFIG_DEBUG_INFO_BTF
-      # silently drops out of the config even with _debugdisable=false.
+      # NOTE: pahole is required, or CONFIG_DEBUG_INFO_BTF silently drops out
+      # of the config even with _debugdisable=false. Package renamed upstream:
+      # `dwarves` no longer exists in the Arch repos -- it is `pahole` in extra.
       - name: Prepare for makepkg
         run: |
-          pacman -Syu --noconfirm base-devel sudo dwarves
+          pacman -Syu --noconfirm base-devel sudo pahole
           useradd user -G wheel && echo "user ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
           chown user -R ..
           chown user -R /tmp
@@ -136,6 +137,17 @@ jobs:
         run: |
           set -euo pipefail
           [ -f kernelconfig.new ] || { echo "FAIL: kernelconfig.new not produced"; exit 1; }
+
+          # `yes ''` auto-answers any prompt with its default, so prove the pin
+          # held rather than that the build merely exited 0.
+          echo "--- the pinned series, not whatever upstream calls latest ---"
+          mk=$(find /tmp -maxdepth 5 -name Makefile -path '*linux-src-git*' -print -quit)
+          rel=$(awk '/^VERSION =/{v=$3} /^PATCHLEVEL =/{p=$3} /^SUBLEVEL =/{s=$3} END{print v"."p"."s}' "$mk")
+          case "$rel" in
+            6.12.*) echo "OK: building $rel" ;;
+            *) echo "FAIL: expected the 6.12 series, got '${rel:-unknown}' (${mk:-no Makefile found})"; exit 1 ;;
+          esac
+
           echo "--- config invariants ---"
           for want in \
             'CONFIG_HZ=300' \
